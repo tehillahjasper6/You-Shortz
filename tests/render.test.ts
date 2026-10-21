@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkHighlight, clipFrames, clipWords, slugify, type Highlight } from "../scripts/04_render.ts";
+import { checkHighlight, clipFrames, clipWords, slugify, type Highlight } from "../remotion/clip-props.ts";
 
 test("clipFrames converts absolute seconds to trimBefore + durationInFrames", () => {
   assert.deepEqual(clipFrames(12.34, 37.9, 30), { trimBefore: 370, durationInFrames: 767 });

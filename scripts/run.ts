@@ -14,13 +14,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { renderArgsSpec, renderClips, renderOptionsFromArgs } from "./04_render.ts";
+import { renderArgsSpec, renderOptionsFromArgs } from "./render-options.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PYTHON = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 const { values } = parseArgs({
   options: {
+    workspace: { type: "string" },
     url: { type: "string" },
     file: { type: "string" },
     clips: { type: "string", default: "3" },
@@ -41,10 +42,14 @@ const { values } = parseArgs({
   },
 });
 
+if (values.workspace) process.env.VIRAL_CLIPPER_WORKSPACE = path.resolve(values.workspace);
+const WORKSPACE = path.resolve(process.env.VIRAL_CLIPPER_WORKSPACE || ROOT);
+
 if (values.help) {
   console.log(`Usage: npx tsx scripts/run.ts (--url URL | --file PATH) [options]
 
 Source
+  --workspace DIR        Keep this video's public/ and output/ in DIR (default: repo root)
   --url URL              YouTube video to ingest
   --file PATH            Local .mp4 / .mov / .mkv
   --force                Replace public/source.mp4 when switching to a new source
@@ -99,7 +104,7 @@ const main = async () => {
       ...opt("--cookies", values.cookies),
       ...(values.force ? ["--force"] : []),
     ]);
-  } else if (!existsSync(path.join(ROOT, "public", "source.mp4"))) {
+  } else if (!existsSync(path.join(WORKSPACE, "public", "source.mp4"))) {
     console.error("Nothing ingested yet: pass --url or --file.");
     process.exit(1);
   }
@@ -122,6 +127,8 @@ const main = async () => {
     return;
   }
 
+  // Imported here, not at the top, so --workspace is set before workspace paths resolve.
+  const { renderClips } = await import("./04_render.ts");
   const renderOptions = renderOptionsFromArgs(values);
   const only = values.only ? ["--only", values.only] : [];
   if (renderOptions.reframe !== "fit") python("04a_face_track.py", only);

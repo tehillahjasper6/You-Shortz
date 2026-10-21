@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from common import AUDIO_WAV, INGEST_JSON, ROOT, TRANSCRIPT_JSON, log, media_duration, read_json, write_json
+from common import AUDIO_WAV, INGEST_JSON, TRANSCRIPT_JSON, WORKSPACE, log, media_duration, read_json, rel, write_json
 
 # Non-speech cue tokens such as [Music] or (applause) never belong in captions.
 NON_SPEECH = re.compile(r"^[\[\(][^\]\)]*[\]\)]$")
@@ -166,7 +166,7 @@ def main() -> None:
     subs = ingest.get("subtitles")
 
     if subs and not args.whisper:
-        path = ROOT / subs["path"]
+        path = WORKSPACE / subs["path"]
         log(f"Using YouTube {subs['kind']} subtitles ({subs['lang']}) for word timing.")
         words = words_from_json3(path)
         if not words:
@@ -182,7 +182,7 @@ def main() -> None:
 
     write_json(TRANSCRIPT_JSON, transcript)
     n_words = sum(len(s["words"]) for s in transcript["segments"])
-    log(f"Wrote {TRANSCRIPT_JSON.relative_to(ROOT)} ({len(transcript['segments'])} segments, {n_words} words).")
+    log(f"Wrote {rel(TRANSCRIPT_JSON)} ({len(transcript['segments'])} segments, {n_words} words).")
 
 
 if __name__ == "__main__":

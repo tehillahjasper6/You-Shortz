@@ -44,6 +44,9 @@ Each phase is a separate script that writes an artifact you can review. A phase 
 | 4b. B-roll | `scripts/04b_broll.py` | `output/broll.json`, `public/broll/*` |
 | 3–5. Render | `scripts/04_render.ts` | `output/clips/*.mp4` + metadata |
 | 5b. Audio master | `scripts/04c_master_audio.py` | in-place on each clip (called by the render) |
+| 6. Upload (opt-in) | `scripts/upload.py` | `output/upload_plan.json`, `output/uploads.json` |
+| Batch | `scripts/batch.ts` | `workspaces/<video>/…`, `workspaces/batch_manifest.csv` |
+| Review UI | `review/` (`npm run review`) | edits `output/highlights.json`, starts renders |
 | All | `scripts/run.ts` | runs the above in order |
 
 ### 1a. Ingest
@@ -103,6 +106,47 @@ The full transcript, with each word tagged by its absolute start time, goes to a
   - The mix is then mastered to −14 LUFS.
 - **Options:** `--music-lufs` and `--duck-db` tune the levels; `--no-master` skips the step.
 
+## Tier 3: workflow and scale
+
+### Review UI (`npm run review`)
+A local web app at http://localhost:5173 for reviewing and editing clips without touching the JSON:
+- **Storyboard:** every candidate as a card with a thumbnail, score, time range and warnings, ticked to include in a render.
+- **Live preview:** Remotion's `<Player>` plays the same `ViralClip` composition the renderer uses, built from the same `buildClipProps()`, so the preview matches the output.
+- **Trimming:**
+  - Drag the start and end handles over the source timeline; they snap to word boundaries with the same 0.2–0.4 s padding as detection.
+  - Or click a transcript word to start there; shift-click to end there.
+- **Copy:** edit the hook (or pick one of the A/B variants), the YouTube title (with a 100-character counter), the TikTok description and the Reels caption.
+- **Save and render:** **Save** validates and writes `highlights.json`. **Render selected** runs the pipeline for the ticked clips (face tracking, B-roll, render, master), shows progress, and links the finished MP4s.
+
+To review a batch video, point it at that video's workspace: `VIRAL_CLIPPER_WORKSPACE=workspaces/<id> npm run review`. The UI is a local dev server, so it runs on your own machine, not inside a Claude Code cloud session.
+
+### Batch mode (`npm run batch`)
+```bash
+npx tsx scripts/batch.ts --urls list.txt --clips 3 --cleanup
+npx tsx scripts/batch.ts --url "https://youtube.com/@creator" --limit 20 -- --music bed.mp3
+```
+- **Inputs:** video, playlist and channel URLs (channels and playlists expand to their videos, newest first, up to `--limit`) and local files, one per line, with `#` comments allowed.
+- **Running:** videos are processed one after another, each in its own workspace `workspaces/<video id>/`, so they never overwrite each other. Arguments after `--` go to `run.ts` for every video.
+- **Resuming:** videos that already have clips are skipped, so an interrupted batch picks up where it stopped; `--force` redoes them.
+- **Disk:** `--cleanup` deletes each video's source and intermediate media once its clips are rendered.
+- **Results:** `workspaces/batch_manifest.csv` (and `.json`) ranks every clip from every video by `viral_score`, with its titles, captions and file path. Failed videos are listed at the end with the reason, and the command exits non-zero.
+
+Any single command can target a workspace with `--workspace DIR` or `$VIRAL_CLIPPER_WORKSPACE`.
+
+### Auto-upload, gated (`scripts/upload.py`)
+Nothing is posted without an explicit confirmation step:
+```bash
+python3 scripts/upload.py plan --platforms youtube,instagram --privacy private
+#   prints each clip's destination, title/caption and privacy, plus a confirmation code
+python3 scripts/upload.py run --confirm 3f9a1c2e
+```
+- **The confirmation code** is a hash of the plan and of the clip files. A plan edited after review, or a clip re-rendered since, needs a fresh `plan` and a fresh code.
+- **YouTube Shorts:** YouTube Data API v3 resumable upload, with title, description (hook, hashtags, `#Shorts`, B-roll credits), tags and privacy (default **private**). Needs `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and `YOUTUBE_REFRESH_TOKEN`, an OAuth refresh token with the `youtube.upload` scope.
+- **Instagram Reels:** Instagram Graph API container with resumable upload, then a status poll, then publish. Needs `IG_USER_ID` and `IG_ACCESS_TOKEN` (`instagram_content_publish`). Instagram has no private option, so publishing makes the Reel public, and the plan says so.
+- **Re-runs:** every upload is logged in `output/uploads.json`, and a re-run skips anything already posted.
+- **Network:** uploads need `oauth2.googleapis.com`, `www.googleapis.com`, `graph.facebook.com` and `rupload.facebook.com`.
+- **TikTok** isn't supported: its Content Posting API requires an audited app. Use the TikTok description in `metadata.json` when posting by hand.
+
 ## Editing and re-rendering
 
 ```bash
@@ -137,7 +181,7 @@ Preview and tweak the composition interactively with `npm run studio`. Props are
 ## Tests
 
 ```bash
-npm test          # TS (trim math, captions, camera path, reframe/B-roll selection) + Python (json3, validation, snapping, face tracking, B-roll, ducking)
+npm test          # TS (trim math, captions, camera path, reframe/B-roll, snap handles, batch CSV) + Python (json3, validation, snapping, face tracking, B-roll, ducking, upload gating)
 npm run typecheck
 ```
 
@@ -145,11 +189,14 @@ npm run typecheck
 
 ```
 scripts/   01_ingest.py  02_transcribe.py  03_detect_viral.py  04a_face_track.py  04b_broll.py
-           04c_master_audio.py  04_render.ts  run.ts  common.py
-remotion/  index.ts  Root.tsx  ViralClip.tsx  schema.ts  camera.ts  fonts.ts
+           04c_master_audio.py  04_render.ts  run.ts  batch.ts  expand_urls.py  upload.py
+           common.py  paths.ts  render-options.ts
+remotion/  index.ts  Root.tsx  ViralClip.tsx  schema.ts  clip-props.ts  camera.ts  fonts.ts
            components/  Captions.tsx  HookOverlay.tsx  ProgressBar.tsx  SafeZoneOverlay.tsx  BRoll.tsx
 public/    source.mp4 (ingested, git-ignored)   fonts/ (Montserrat, SIL OFL 1.1)
+review/    vite.config.ts  api.ts  index.html  src/  (the review UI)
 output/    ingest.json  transcript.json  highlights.json  face_tracks.json  broll.json  audio.wav  clips/  (git-ignored)
+workspaces/  one directory per batch video + batch_manifest.csv  (git-ignored)
 models/    face detector weights, downloaded on first use (git-ignored)
 ```
 
@@ -164,5 +211,4 @@ Built so far, beyond the core pipeline (Tier 1):
 
 Tier 2 (built): face-aware auto-reframing, contextual B-roll, music ducking with a −14 LUFS master.
 
-Next:
-- **Tier 3:** a review UI with trim handles and an in-browser `<Player>` preview, batch mode over many URLs with a CSV manifest, and confirmed auto-upload through the YouTube Data API and Instagram Graph API.
+Tier 3 (built): the review UI, batch mode with a ranked CSV manifest, and gated auto-upload to YouTube Shorts and Instagram Reels.
