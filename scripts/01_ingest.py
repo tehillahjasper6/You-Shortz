@@ -62,7 +62,17 @@ def download_youtube(url: str, sub_lang: str, dest: Path, cookies: str | None) -
     except ImportError:
         sys.exit("yt-dlp is not installed. Run: pip install -r requirements.txt")
 
-    opts = {
+    base = {"noplaylist": True, "quiet": False, "noprogress": True}
+    if cookies:
+        # Netscape cookies.txt from a logged-in browser; YouTube often demands
+        # this ("confirm you're not a bot") for requests from cloud servers.
+        base["cookiefile"] = cookies
+    ffmpeg_dir = ffmpeg_dir_for_ytdlp()
+    if ffmpeg_dir:
+        base["ffmpeg_location"] = ffmpeg_dir
+
+    video_opts = {
+        **base,
         # Highest resolution <=1080p, preferring H.264 in MP4 so the source can be stream-copied.
         "format": (
             f"bv*[height<={MAX_HEIGHT}][vcodec^=avc1][ext=mp4]+ba[ext=m4a]/"
@@ -70,23 +80,8 @@ def download_youtube(url: str, sub_lang: str, dest: Path, cookies: str | None) -
         ),
         "merge_output_format": "mp4",
         "outtmpl": str(dest / "original.%(ext)s"),
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": [sub_lang, f"{sub_lang}-orig"],
-        "subtitlesformat": "json3",
-        "noplaylist": True,
-        "quiet": False,
-        "noprogress": True,
     }
-    if cookies:
-        # Netscape cookies.txt from a logged-in browser; YouTube often demands
-        # this ("confirm you're not a bot") for requests from cloud servers.
-        opts["cookiefile"] = cookies
-    ffmpeg_dir = ffmpeg_dir_for_ytdlp()
-    if ffmpeg_dir:
-        opts["ffmpeg_location"] = ffmpeg_dir
-
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(video_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         video_path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
     if not video_path.exists():
@@ -95,13 +90,29 @@ def download_youtube(url: str, sub_lang: str, dest: Path, cookies: str | None) -
             raise RuntimeError("yt-dlp finished but no video file was found")
         video_path = candidates[0]
 
+    # Subtitles are a separate, best-effort request: YouTube rate-limits them
+    # (HTTP 429) far more readily than video, and Whisper can transcribe instead.
     subs = None
-    for lang, sub in (info.get("requested_subtitles") or {}).items():
-        path = sub.get("filepath")
-        if path and Path(path).exists():
-            manual = lang in (info.get("subtitles") or {})
-            subs = {"path": str(path), "lang": lang, "kind": "manual" if manual else "auto"}
-            break
+    sub_opts = {
+        **base,
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": [sub_lang, f"{sub_lang}-orig"],
+        "subtitlesformat": "json3",
+        "outtmpl": str(dest / "original.%(ext)s"),
+    }
+    try:
+        with yt_dlp.YoutubeDL(sub_opts) as ydl:
+            sub_info = ydl.extract_info(url, download=True)
+        for lang, sub in (sub_info.get("requested_subtitles") or {}).items():
+            path = sub.get("filepath")
+            if path and Path(path).exists():
+                manual = lang in (sub_info.get("subtitles") or {})
+                subs = {"path": str(path), "lang": lang, "kind": "manual" if manual else "auto"}
+                break
+    except yt_dlp.utils.DownloadError as e:
+        log(f"Subtitles unavailable ({str(e).splitlines()[0][:160]}); transcription will use Whisper.")
 
     meta = {
         "title": info.get("title"),
