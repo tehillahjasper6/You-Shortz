@@ -1,0 +1,32 @@
+{
+  "name": "viral-clipper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first pipeline: YouTube URL or video file -> ranked 9:16 viral short clips rendered with Remotion.",
+  "type": "module",
+  "scripts": {
+    "clip": "tsx scripts/run.ts",
+    "render": "tsx scripts/04_render.ts",
+    "studio": "remotion studio remotion/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts && python3 -m unittest discover -s tests"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.537",
+    "@remotion/captions": "^4.0.537",
+    "@remotion/cli": "^4.0.537",
+    "@remotion/fonts": "^4.0.537",
+    "@remotion/media": "^4.0.537",
+    "@remotion/renderer": "^4.0.537",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "remotion": "^4.0.537",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

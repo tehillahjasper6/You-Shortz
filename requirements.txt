@@ -1,0 +1,5 @@
+yt-dlp>=2025.1.1
+faster-whisper>=1.1.0
+anthropic>=2.0.0
+# Optional: only needed for --provider gemini
+# google-genai>=1.30.0
