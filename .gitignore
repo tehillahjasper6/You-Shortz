@@ -12,3 +12,4 @@ output/*
 # Downloaded at runtime
 models/
 public/broll/
+workspaces/
