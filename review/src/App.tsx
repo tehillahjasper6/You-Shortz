@@ -215,7 +215,6 @@ const StoryCard: React.FC<{
       <div className="card-body">
         <div className="card-top">
           <strong>#{clip.rank}</strong>
-          <span className="score">{clip.viral_score}</span>
           {edited ? <span className="badge">edited</span> : null}
           <input
             type="checkbox"
@@ -267,7 +266,7 @@ const Editor: React.FC<{ clip: Highlight; state: State; onChange: (patch: Partia
 
       <div className="fields">
         <h2>
-          Clip #{clip.rank} <span className="muted">score {clip.viral_score}</span>
+          Clip #{clip.rank}
         </h2>
         <p className="muted small">{clip.reasoning}</p>
 

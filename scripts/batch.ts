@@ -1,6 +1,6 @@
 /**
  * Batch mode: run the whole pipeline over many videos (e.g. a creator's back
- * catalog), one after another, each in its own workspace, then rank every
+ * catalog), one after another, each in its own workspace, then list every
  * clip from every video in one CSV manifest.
  *
  *   npx tsx scripts/batch.ts --urls list.txt --clips 3
@@ -15,7 +15,7 @@
  * stopped (--force redoes them). --cleanup deletes each video's source and
  * intermediate media once its clips are rendered, to save disk.
  *
- * Writes workspaces/batch_manifest.csv (all clips, best first) and
+ * Writes workspaces/batch_manifest.csv (all clips, per video in pick order) and
  * workspaces/batch_manifest.json.
  */
 import { spawnSync } from "node:child_process";
@@ -26,6 +26,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Exit code the pipeline uses while waiting for the Claude Code session (--provider session).
+const AWAITING_SESSION = 3;
 const PYTHON = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 export type BatchVideo = { source: "url" | "file"; url?: string; path?: string; id: string; title?: string | null; error?: string };
@@ -36,7 +38,6 @@ type ClipMeta = {
   start: number;
   end: number;
   duration: number;
-  viral_score: number;
   hook_text: string;
   tiktok?: { description?: string };
   instagram_reels?: { caption?: string };
@@ -53,8 +54,6 @@ export type BatchResult = {
 };
 
 export const MANIFEST_COLUMNS = [
-  "overall_rank",
-  "viral_score",
   "video_title",
   "video_source",
   "clip_rank",
@@ -74,15 +73,12 @@ const csvCell = (v: unknown): string => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-/** One row per clip across all videos, best viral_score first; failed videos are listed last. */
+/** One row per clip: videos in batch order, each video's clips most interesting first; failed videos last. */
 export const buildManifestRows = (results: BatchResult[], root: string): Record<(typeof MANIFEST_COLUMNS)[number], unknown>[] => {
   const clips = results.flatMap((r) =>
     r.clips.map((c) => ({ r, c })),
   );
-  clips.sort((a, b) => b.c.viral_score - a.c.viral_score);
-  const rows = clips.map(({ r, c }, i) => ({
-    overall_rank: i + 1,
-    viral_score: c.viral_score,
+  const rows = clips.map(({ r, c }) => ({
     video_title: r.title ?? r.video.title ?? "",
     video_source: r.video.url ?? r.video.path ?? "",
     clip_rank: c.rank,
@@ -98,8 +94,6 @@ export const buildManifestRows = (results: BatchResult[], root: string): Record<
   }));
   for (const r of results.filter((x) => x.status === "failed")) {
     rows.push({
-      overall_rank: "",
-      viral_score: "",
       video_title: r.title ?? r.video.title ?? "",
       video_source: r.video.url ?? r.video.path ?? "",
       clip_rank: "",
@@ -170,7 +164,7 @@ const main = async () => {
   --url URL          Repeatable
   --limit N          Max videos per playlist/channel (default: all)
   --clips N          Clips per video (default 3)
-  --provider NAME    anthropic | gemini | heuristic (default anthropic)
+  --provider NAME    anthropic | gemini | session | heuristic (default anthropic)
   --workspaces DIR   Where per-video workspaces go (default ./workspaces)
   --cleanup          Delete each video's source/intermediate media after its clips render
   --force            Redo videos that already have clips`);
@@ -192,6 +186,7 @@ const main = async () => {
   console.log(`[viral-clipper] Batch: ${videos.length} video(s) → ${path.relative(ROOT, wsRoot) || wsRoot}/`);
 
   const results: BatchResult[] = [];
+  let paused = false;
   for (const [i, video] of videos.entries()) {
     const workspace = path.join(wsRoot, video.id);
     const label = `[${i + 1}/${videos.length}] ${video.title ?? video.url ?? video.path}`;
@@ -219,6 +214,13 @@ const main = async () => {
       ...passthrough,
     ];
     const res = spawnSync(process.execPath, args, { cwd: ROOT, stdio: "inherit", env: process.env });
+    if (res.status === AWAITING_SESSION) {
+      // --provider session: this video waits on the Claude Code session. Stop here; re-running the
+      // same batch skips finished videos and resumes this one once the request is answered.
+      console.log(`[viral-clipper] ${label}: paused for the Claude Code session; re-run the batch after answering.`);
+      paused = true;
+      break;
+    }
     const done = readClips(workspace);
     if (res.status === 0 && done?.clips.length) {
       results.push({ video, workspace, status: "done", ...done });
@@ -238,10 +240,11 @@ const main = async () => {
   );
   const ok = results.filter((r) => r.status !== "failed").length;
   console.log(
-    `[viral-clipper] Batch finished: ${ok}/${results.length} video(s) OK, ${rows.filter((r) => r.clip_file).length} clip(s) ranked in ` +
+    `[viral-clipper] Batch finished: ${ok}/${results.length} video(s) OK, ${rows.filter((r) => r.clip_file).length} clip(s) listed in ` +
       `${path.relative(ROOT, path.join(wsRoot, "batch_manifest.csv"))}`,
   );
-  if (ok < results.length) process.exitCode = 1;
+  if (paused) process.exitCode = AWAITING_SESSION;
+  else if (ok < results.length) process.exitCode = 1;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

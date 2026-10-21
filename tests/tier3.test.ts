@@ -27,25 +27,24 @@ test("viewWindow adds context and clamps to the video", () => {
   assert.deepEqual(viewWindow(50, 80, 300, 10), [40, 90]);
 });
 
-const clip = (rank: number, score: number, file: string) => ({
+const clip = (rank: number, file: string) => ({
   rank,
   file,
   start: 1,
   end: 21,
   duration: 20,
-  viral_score: score,
   hook_text: `hook ${rank}, "quoted"`,
   youtube_shorts: { title: `title ${rank}` },
 });
 
-test("batch manifest ranks clips across videos and lists failures last", () => {
+test("batch manifest lists each video's clips in pick order and failures last", () => {
   const results: BatchResult[] = [
     {
       video: { source: "url", url: "https://y/a", id: "a", title: "A" },
       workspace: "/r/workspaces/a",
       status: "done",
       title: "A",
-      clips: [clip(1, 70, "a1.mp4"), clip(2, 90, "a2.mp4")],
+      clips: [clip(1, "a1.mp4"), clip(2, "a2.mp4")],
     },
     { video: { source: "url", url: "https://y/b", id: "b" }, workspace: "/r/workspaces/b", status: "failed", error: "blocked", clips: [] },
     {
@@ -53,15 +52,15 @@ test("batch manifest ranks clips across videos and lists failures last", () => {
       workspace: "/r/workspaces/c",
       status: "skipped",
       title: "C",
-      clips: [clip(1, 80, "c1.mp4")],
+      clips: [clip(1, "c1.mp4")],
     },
   ];
   const rows = buildManifestRows(results, "/r");
-  assert.deepEqual(rows.map((r) => r.viral_score), [90, 80, 70, ""]);
-  assert.deepEqual(rows.map((r) => r.overall_rank), [1, 2, 3, ""]);
-  assert.equal(rows[0].clip_file, "workspaces/a/output/clips/a2.mp4");
+  assert.deepEqual(rows.map((r) => r.video_title), ["A", "A", "C", ""]);
+  assert.deepEqual(rows.map((r) => r.clip_rank), [1, 2, 1, ""]);
+  assert.equal(rows[1].clip_file, "workspaces/a/output/clips/a2.mp4");
   assert.equal(rows[3].status, "failed: blocked");
   const csv = toCsv(rows);
-  assert.ok(csv.startsWith("overall_rank,viral_score,"));
+  assert.ok(csv.startsWith("video_title,video_source,clip_rank,"));
   assert.ok(csv.includes('"hook 2, ""quoted"""'), "commas and quotes are CSV-escaped");
 });

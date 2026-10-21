@@ -1,21 +1,26 @@
 # Viral Clipper: notes for Claude
 
-The owner runs this pipeline from Claude Code cloud sessions. They paste a YouTube link or upload a video and expect the finished clips back in the chat. See README.md for the full pipeline design.
+The owner runs this pipeline from Claude Code cloud sessions. They paste a YouTube link or upload a video and expect the finished clips back in the chat, ready to download. **The LLM steps are done by you, the Claude in the session (`--provider session`), not with an `ANTHROPIC_API_KEY`.** See README.md for the full pipeline design.
 
 ## When given a YouTube link or an uploaded video
 
-1. Run the whole pipeline in one command from the repo root:
-   - YouTube: `npx tsx scripts/run.ts --url "<link>" --clips 3`
-   - Upload: `npx tsx scripts/run.ts --file "<path of the uploaded file>" --clips 3`
+1. Run the whole pipeline in one command from the repo root, always with `--provider session`:
+   - YouTube: `npx tsx scripts/run.ts --url "<link>" --clips 3 --provider session`
+   - Upload: `npx tsx scripts/run.ts --file "<path of the uploaded file>" --clips 3 --provider session`
    - A source that differs from the one already in `public/source.mp4` needs `--force`. Add it when the user gives a new video; it moves the old transcript and highlights aside.
    - Add the owner's options as asked: `--clips N`, `--music <file|dir>`, `--variants`, `--reframe fit`, `--no-broll`, `--whisper`.
-2. Rendering takes minutes per clip. Run it in the background and tell the user it's running.
-3. Deliver with `SendUserFile`: each `output/clips/viral_*.mp4`, plus `output/clips/metadata.json` (platform captions and titles). Summarize each clip in one line: rank, score, hook and time range.
-4. Edits ("make clip 2 start earlier", "change the hook"): edit `output/highlights.json`, then `npm run render -- --only <rank>`. Never re-download or re-transcribe for an edit.
+2. **When it pauses with exit code 3** ("Paused for the Claude Code session"), a request is waiting for you:
+   - `output/selection_request.md`: read the transcript and pick the most interesting, intriguing sections yourself, most interesting first. There is no scoring: choose what you would actually want to watch. Use absolute start/end times copied from the word timestamps (15–60 s, not mid-word, no overlaps). Write the JSON answer to `output/selection_response.json`, including the `request_id` from the file.
+   - `output/broll_request.md` (only when a Pexels or Unsplash key is set): pick the B-roll moments the same way and write `output/broll_response.json`.
+   - Then re-run the exact same command. If your answer broke the contract, it pauses once more with a retry request that lists the violations; fix them and answer again.
+   - Pick with real judgement. Never fill in the heuristic's output or placeholder values.
+3. Rendering takes minutes per clip. Run it in the background and tell the owner it's running.
+4. **Deliver the final videos for download** with `SendUserFile` (`display: "attach"` so they download, or `render` to preview inline): each `output/clips/viral_*.mp4`, plus `output/clips/metadata.json` (platform captions and titles). Summarize each clip in one line: rank, hook, time range and why it's interesting.
+5. Edits ("make clip 2 start earlier", "change the hook"): edit `output/highlights.json`, then `npm run render -- --only <rank>`. Never re-download or re-transcribe for an edit.
 
 ## Several videos at once
 
-`npx tsx scripts/batch.ts --url <link> [--url <link> …] --clips 3 --cleanup`. A channel or playlist link expands to its videos; cap it with `--limit N`. Every video gets `workspaces/<id>/`. Deliver `workspaces/batch_manifest.csv` plus the top clips, and say which videos failed and why. To edit a batch video's clips, run the same commands with `--workspace workspaces/<id>`. Use `--cleanup` in cloud sessions, where disk is limited.
+`npx tsx scripts/batch.ts --url <link> [--url <link> …] --clips 3 --provider session --cleanup`. With session picking, the batch pauses (exit 3) at each video that needs an answer. Answer the request in that video's workspace (`workspaces/<id>/output/selection_request.md`), then re-run the same batch command; finished videos are skipped. A channel or playlist link expands to its videos; cap it with `--limit N`. Every video gets `workspaces/<id>/`. Deliver `workspaces/batch_manifest.csv` plus the top clips, and say which videos failed and why. To edit a batch video's clips, run the same commands with `--workspace workspaces/<id>`. Use `--cleanup` in cloud sessions, where disk is limited.
 
 ## Uploading (never without explicit approval)
 
@@ -32,9 +37,9 @@ Uploads need `YOUTUBE_CLIENT_ID`/`YOUTUBE_CLIENT_SECRET`/`YOUTUBE_REFRESH_TOKEN`
 ## Things that block a run (tell the owner, don't work around them)
 
 - **Network:** `www.youtube.com` and `*.googlevideo.com` (download), `huggingface.co` (Whisper models), `api.pexels.com` / `videos.pexels.com` / `api.unsplash.com` / `images.unsplash.com` (B-roll). These must be allowed in the environment's network settings.
-- **Secrets:** `ANTHROPIC_API_KEY` (scoring), `PEXELS_API_KEY` and/or `UNSPLASH_ACCESS_KEY` (B-roll, optional). These go in environment variables, never pasted into chat.
+- **Secrets:** no Anthropic key is needed, since you pick the sections. `PEXELS_API_KEY` and/or `UNSPLASH_ACCESS_KEY` are optional, for B-roll. These go in environment variables, never pasted into chat.
 - **YouTube bot check** ("Sign in to confirm you're not a bot") on cloud IPs: needs `--cookies <cookies.txt>`, or have the owner upload the video file instead.
-- Without an Anthropic key, `--provider heuristic` gives an offline dry run. Say that its picks are keyword-based.
+- `--provider heuristic` is only for offline dry runs. Say that its picks are keyword-based, not real judgement.
 
 ## Conventions
 

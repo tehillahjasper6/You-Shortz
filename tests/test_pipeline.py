@@ -66,8 +66,7 @@ class Json3Parsing(unittest.TestCase):
 class Validation(unittest.TestCase):
     def clip(self, **kw):
         c = {
-            "start": 10.0, "end": 40.0, "hook_text": "A short hook", "hook_variants": [],
-            "scores": {k: 7 for k in detect.SCORE_KEYS}, "reasoning": "r",
+            "start": 10.0, "end": 40.0, "hook_text": "A short hook", "hook_variants": [], "reasoning": "r",
             "tiktok_description": "t", "instagram_caption": "i", "youtube_title": "y",
         }
         c.update(kw)
@@ -83,7 +82,6 @@ class Validation(unittest.TestCase):
             "reversed": self.clip(start=50.0, end=40.0),
             "too short": self.clip(end=20.0),
             "too long": self.clip(end=80.0),
-            "bad score": self.clip(scores={**{k: 7 for k in detect.SCORE_KEYS}, "shareability": 11}),
             "long hook": self.clip(hook_text="one two three four five six seven eight nine ten eleven"),
             "long title": self.clip(youtube_title="x" * 101),
         }

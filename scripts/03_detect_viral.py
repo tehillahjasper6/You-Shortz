@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Phase 2 — Viral moment detection.
+"""Phase 2 — Pick the most interesting sections.
 
-Sends the word-timed transcript to an LLM that scores candidate moments on four
-1-10 dimensions (Hook Strength, Emotional Resonance, Shareability, Practical
-Value) and returns absolute timestamps. The response is validated against the
-contract (0 <= start < end <= duration, 15-60 s, scores in range, hook <= 10
+Sends the word-timed transcript to an LLM that picks the most interesting,
+intriguing sections of the video (no scoring rubric), ranked from most to
+least gripping, with absolute timestamps. The response is validated against
+the contract (0 <= start < end <= duration, 15-60 s, no overlaps, hook <= 10
 words); a violating response is retried once with a stricter instruction.
 
 Accepted boundaries are then snapped so no clip starts or ends mid-word:
@@ -16,7 +16,10 @@ Writes output/highlights.json — edit it freely, then re-render.
 Providers:
   anthropic  Claude (default model claude-sonnet-5-5; needs ANTHROPIC_API_KEY)
   gemini     Gemini (default model gemini-2.5-flash; needs GEMINI_API_KEY)
-  heuristic  Offline keyword/pace scorer — no API key, for dry runs
+  session    The Claude running this Claude Code session picks them: the
+             script writes output/selection_request.md and exits with code 3;
+             Claude writes output/selection_response.json and re-runs. No key.
+  heuristic  Offline keyword/pace picker — no API key, for dry runs
 """
 
 from __future__ import annotations
@@ -34,10 +37,13 @@ from common import (
     INGEST_JSON,
     TRANSCRIPT_JSON,
     WORK_DIR,
+    await_session,
     ffmpeg_cmd,
     log,
     read_json,
     rel,
+    request_id,
+    session_response,
     run,
     write_json,
 )
@@ -52,9 +58,15 @@ PHRASE_SNAP_AFTER_S = 1.0
 MAX_HOOK_WORDS = 10
 MAX_YT_TITLE = 100
 FPS = 30
-SCORE_KEYS = ("hook_strength", "emotional_resonance", "shareability", "practical_value")
 
-DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-2.5-flash", "heuristic": "heuristic-v1"}
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5-5",
+    "gemini": "gemini-2.5-flash",
+    "session": "claude-code-session",
+    "heuristic": "heuristic-v1",
+}
+SESSION_NAME = "selection"
+RETRY_STATE = WORK_DIR / "selection_retry.json"
 
 CLIP_SCHEMA = {
     "type": "object",
@@ -80,19 +92,13 @@ CLIP_SCHEMA = {
                             "additionalProperties": False,
                         },
                     },
-                    "scores": {
-                        "type": "object",
-                        "properties": {k: {"type": "integer"} for k in SCORE_KEYS},
-                        "required": list(SCORE_KEYS),
-                        "additionalProperties": False,
-                    },
-                    "reasoning": {"type": "string"},
+                    "reasoning": {"type": "string", "description": "Why this section is interesting"},
                     "tiktok_description": {"type": "string"},
                     "instagram_caption": {"type": "string"},
                     "youtube_title": {"type": "string"},
                 },
                 "required": [
-                    "start", "end", "hook_text", "hook_variants", "scores", "reasoning",
+                    "start", "end", "hook_text", "hook_variants", "reasoning",
                     "tiktok_description", "instagram_caption", "youtube_title",
                 ],
                 "additionalProperties": False,
@@ -103,13 +109,9 @@ CLIP_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are a short-form video editor who finds the moments in long videos that will perform on TikTok, Instagram Reels and YouTube Shorts.
+SYSTEM_PROMPT = """You are a short-form video editor cutting a long video into vertical clips for TikTok, Instagram Reels and YouTube Shorts.
 
-Score every candidate on four dimensions, each an integer from 1 to 10:
-- hook_strength: does the first sentence open a curiosity gap that stops the scroll?
-- emotional_resonance: laughter, surprise, outrage, awe — does it make the viewer feel something?
-- shareability: would someone send this to a friend or repost it?
-- practical_value: does it teach something specific and actionable?
+Pick the most interesting and intriguing sections of the video: the parts a viewer would least want to scroll past. Look for a surprising claim, a question that demands an answer, a story with a payoff, a strong opinion, a revealing moment, or a striking insight. Each clip should open on something that makes people want to keep watching, and end once that curiosity has been paid off.
 
 Rules for each clip:
 - start and end are ABSOLUTE times in seconds from the beginning of the source video, read directly from the transcript timestamps. Never use offsets relative to a segment or to another clip.
@@ -119,12 +121,12 @@ Rules for each clip:
 - Clips must not overlap each other.
 - hook_text is the on-screen hook shown in the first seconds: at most 10 words, punchy, no hashtags. It may paraphrase.
 - hook_variants: three alternative hooks (each at most 10 words) with a predicted click-through rate between 0 and 1.
-- reasoning: one or two sentences on why this moment works.
+- reasoning: one or two sentences on what makes this section interesting.
 - tiktok_description: conversational, 1-2 sentences plus 3-5 hashtags.
 - instagram_caption: a slightly longer caption with a call to action and 5-8 hashtags.
 - youtube_title: at most 100 characters, no hashtags required.
 
-Rank clips from most to least viral."""
+Order the clips from most to least interesting."""
 
 
 # --------------------------------------------------------------------------- prompt
@@ -200,7 +202,7 @@ def call_anthropic(model: str, effort: str, system: str, user: str) -> dict:
         sys.exit(f"Could not reach the Anthropic API: {e}")
 
     if response.stop_reason == "refusal":
-        raise ValueError("The model declined to score this transcript.")
+        raise ValueError("The model declined to pick from this transcript.")
     if response.stop_reason == "max_tokens":
         raise ValueError("Response was cut off at max_tokens.")
     text = next(b.text for b in response.content if b.type == "text")
@@ -236,7 +238,7 @@ PRACTICAL_WORDS = re.compile(r"\b(how to|step|tip|trick|should|need to|way to|us
 
 
 def heuristic_candidates(transcript: dict, n: int, duration: float) -> dict:
-    """Keyword/pace scorer for offline runs. Same output shape as the LLM."""
+    """Keyword/pace picker for offline runs. Same output shape as the LLM, ordered best first."""
     segs = transcript["segments"]
     # Aim for ~32 s, but shorter when the video is too short to fit n of those side by side.
     target = min(32.0, max(MIN_CLIP_S + 3, 0.8 * duration / max(n, 1)))
@@ -256,15 +258,17 @@ def heuristic_candidates(transcript: dict, n: int, duration: float) -> dict:
             text = " ".join(s["text"] for s in segs[i : j + 1])
             words = len(text.split())
             first = segs[i]["text"]
-            scores = {
-                "hook_strength": min(10, scale(len(HOOK_WORDS.findall(first)), len(first.split()), 4) + (2 if "?" in first else 0)),
-                "emotional_resonance": min(10, scale(len(EMOTION_WORDS.findall(text)) + text.count("!"), words, 12)),
-                "shareability": scale(len(SHARE_WORDS.findall(text)), words, 8),
-                "practical_value": scale(len(PRACTICAL_WORDS.findall(text)), words, 10),
-            }
-            pace = words / length  # brisk delivery (~2.5-3.5 wps) retains better
-            score = sum(scores.values()) + (1.5 if 2.3 <= pace <= 3.8 else 0) - abs(length - target) / 4
-            windows.append((score, max(0.0, start), min(duration, end), scores, first, text))
+            # Rough "interesting" signals: an intriguing opener, emotional and
+            # second-person language, concrete how-to talk, and a brisk pace.
+            signals = (
+                min(10, scale(len(HOOK_WORDS.findall(first)), len(first.split()), 4) + (2 if "?" in first else 0))
+                + min(10, scale(len(EMOTION_WORDS.findall(text)) + text.count("!"), words, 12))
+                + scale(len(SHARE_WORDS.findall(text)), words, 8)
+                + scale(len(PRACTICAL_WORDS.findall(text)), words, 10)
+            )
+            pace = words / length  # brisk delivery (~2.5-3.5 wps) holds attention
+            interest = signals + (1.5 if 2.3 <= pace <= 3.8 else 0) - abs(length - target) / 4
+            windows.append((interest, max(0.0, start), min(duration, end), first, text))
 
     windows.sort(key=lambda w: -w[0])
     chosen = []
@@ -275,7 +279,7 @@ def heuristic_candidates(transcript: dict, n: int, duration: float) -> dict:
             break
 
     clips = []
-    for _, start, end, scores, first, text in chosen:
+    for _, start, end, first, text in chosen:
         hook = " ".join(re.sub(r"[^\w'?!\- ]", "", first).split()[:MAX_HOOK_WORDS])
         topic = " ".join(text.split()[:6])
         clips.append(
@@ -288,8 +292,7 @@ def heuristic_candidates(transcript: dict, n: int, duration: float) -> dict:
                     {"text": " ".join(f"Wait for it: {hook}".split()[:MAX_HOOK_WORDS]), "predicted_ctr": 0.045},
                     {"text": " ".join(f"Nobody talks about this: {topic}".split()[:MAX_HOOK_WORDS]), "predicted_ctr": 0.04},
                 ],
-                "scores": scores,
-                "reasoning": "Heuristic pick: keyword density for hook, emotion, shareability and practical value plus speaking pace.",
+                "reasoning": "Offline heuristic pick: intriguing opener, emotional and second-person language, and a brisk pace.",
                 "tiktok_description": f"{hook} 👀 #fyp #viral #learnontiktok",
                 "instagram_caption": f"{hook}\n\nSave this for later and share it with someone who needs it. #reels #viral #explore #tips #mindset",
                 "youtube_title": hook[:MAX_YT_TITLE] or "You need to hear this",
@@ -321,10 +324,6 @@ def validate(payload: dict, duration: float, n: int) -> list[str]:
             errors.append(f"clip {i}: end {e} is not after start {s}")
         elif not (MIN_CLIP_S <= e - s <= MAX_CLIP_S):
             errors.append(f"clip {i}: duration {e - s:.2f}s is outside {MIN_CLIP_S:.0f}-{MAX_CLIP_S:.0f}s")
-        for k in SCORE_KEYS:
-            v = (c.get("scores") or {}).get(k)
-            if not isinstance(v, int) or not 1 <= v <= 10:
-                errors.append(f"clip {i}: score {k}={v!r} must be an integer 1-10")
         if len(str(c.get("hook_text", "")).split()) > MAX_HOOK_WORDS:
             errors.append(f"clip {i}: hook_text has more than {MAX_HOOK_WORDS} words")
         if not str(c.get("hook_text", "")).strip():
@@ -451,8 +450,48 @@ def main() -> None:
     want = max(1, args.clips)
     ask = min(max(want, 3), 10)
     model = args.model or DEFAULT_MODELS[args.provider]
-    log(f"Scoring transcript with {args.provider} ({model}), asking for {ask} candidates…")
+    log(f"Picking the most interesting sections with {args.provider} ({model}), asking for {ask}…")
 
+    if args.provider == "session":
+        payload, errors = session_selection(transcript, ask, duration, not args.no_word_times)
+    else:
+        payload, errors = api_selection(args, model, transcript, ask, duration)
+
+    clips = [c for c in payload.get("clips", []) if clip_is_valid(c, duration)]
+    if errors:
+        log(f"Retry still had {len(errors)} violation(s); keeping the {len(clips)} clip(s) that pass on their own.")
+    if not clips:
+        sys.exit("No valid clips were returned. Try another --model, or --provider heuristic for an offline pass.")
+    finish(args, model, transcript, ingest, duration, want, clips)
+
+
+def session_selection(transcript: dict, ask: int, duration: float, word_times: bool) -> tuple[dict, list[str]]:
+    """Pick via the Claude Code session, with the same one stricter retry as the API path."""
+    prompt = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, None)
+    first = request_id(prompt)
+    answer = session_response(SESSION_NAME, first)
+    if answer is not None:
+        errors = validate(answer, duration, ask)
+        if not errors:
+            return answer, []
+        write_json(RETRY_STATE, {"first": first, "errors": errors})
+        for e in errors:
+            log(f"  - {e}")
+        retry = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, errors)
+        await_session(SESSION_NAME, retry, CLIP_SCHEMA, note="This is the one retry: the previous answer broke the contract (see the end of the task).")
+
+    state = read_json(RETRY_STATE) if RETRY_STATE.exists() else {}
+    if state.get("first") == first:
+        retry = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, state["errors"])
+        answer = session_response(SESSION_NAME, request_id(retry))
+        if answer is not None:
+            return answer, validate(answer, duration, ask)
+        await_session(SESSION_NAME, retry, CLIP_SCHEMA, note="This is the one retry: the previous answer broke the contract (see the end of the task).")
+    await_session(SESSION_NAME, prompt, CLIP_SCHEMA)
+    raise AssertionError("unreachable")
+
+
+def api_selection(args, model: str, transcript: dict, ask: int, duration: float) -> tuple[dict, list[str]]:
     def request(errors: list[str] | None) -> dict:
         if args.provider == "heuristic":
             return heuristic_candidates(transcript, ask, duration)
@@ -474,23 +513,18 @@ def main() -> None:
         for e in errors:
             log(f"  - {e}")
         payload, errors = attempt(errors)
+    return payload, errors
 
-    clips = [c for c in payload.get("clips", []) if clip_is_valid(c, duration)]
-    if errors:
-        log(f"Retry still had {len(errors)} violation(s); keeping the {len(clips)} clip(s) that pass on their own.")
-    if not clips:
-        sys.exit("No valid clips were returned. Try another --model, or --provider heuristic for an offline pass.")
 
+def finish(args, model: str, transcript: dict, ingest: dict, duration: float, want: int, clips: list[dict]) -> None:
     words = [w for s in transcript["segments"] for w in s["words"]]
     if not args.no_snap and words:
         silences = detect_silences(AUDIO_WAV) if AUDIO_WAV.exists() else []
         clips = [snap_clip(c, words, transcript["segments"], duration, silences) for c in clips]
         clips = [c for c in clips if clip_is_valid(c, duration)]
 
-    # Drop overlaps introduced by snapping (keep the higher scorer).
-    for c in clips:
-        c["viral_score"] = round(sum(c["scores"][k] for k in SCORE_KEYS) / len(SCORE_KEYS) * 10, 1)
-    clips.sort(key=lambda c: -c["viral_score"])
+    # Clips arrive ordered most interesting first; drop overlaps introduced by
+    # snapping, keeping the earlier (more interesting) clip.
     kept: list[dict] = []
     for c in clips:
         if all(c["end"] <= k["start"] or c["start"] >= k["end"] for k in kept):
@@ -505,10 +539,8 @@ def main() -> None:
                 "start": c["start"],
                 "end": c["end"],
                 "duration": round(c["end"] - c["start"], 3),
-                "viral_score": c["viral_score"],
                 "hook_text": c["hook_text"].strip(),
                 "reasoning": c["reasoning"],
-                "scores": {k: c["scores"][k] for k in SCORE_KEYS},
                 "hook_variants": sorted(c.get("hook_variants", []), key=lambda v: -v.get("predicted_ctr", 0)),
                 "platform": {
                     "tiktok_description": c["tiktok_description"],
@@ -536,7 +568,7 @@ def main() -> None:
     )
     log(f"Wrote {rel(HIGHLIGHTS_JSON)}:")
     for c in out_clips:
-        log(f"  #{c['rank']} [{c['start']:.2f} → {c['end']:.2f}] score {c['viral_score']} — {c['hook_text']}")
+        log(f"  #{c['rank']} [{c['start']:.2f} → {c['end']:.2f}] {c['hook_text']}")
 
 
 if __name__ == "__main__":
