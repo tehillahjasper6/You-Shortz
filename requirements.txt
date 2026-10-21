@@ -1,5 +1,9 @@
 yt-dlp>=2025.1.1
 faster-whisper>=1.1.0
 anthropic>=2.0.0
+# Face tracking (Tier 2). OpenCV 5 dropped the Caffe importer the face detector uses.
+opencv-python-headless>=4.8,<5
+# Full static FFmpeg for audio mixing; Remotion's bundled build lacks sidechaincompress/asplit/afade.
+imageio-ffmpeg>=0.5.1
 # Optional: only needed for --provider gemini
 # google-genai>=1.30.0

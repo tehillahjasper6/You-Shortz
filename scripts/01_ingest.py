@@ -17,8 +17,7 @@ without re-downloading.
 from __future__ import annotations
 
 import argparse
-import json
-import re
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -29,14 +28,14 @@ from common import (
     HIGHLIGHTS_JSON,
     INGEST_JSON,
     SOURCE_VIDEO,
-    TARGET_LRA,
     TARGET_LUFS,
-    TARGET_TRUE_PEAK,
     TRANSCRIPT_JSON,
     WORK_DIR,
     ffmpeg_cmd,
     ffmpeg_dir_for_ytdlp,
     log,
+    loudnorm_filter,
+    measure_loudness,
     probe,
     read_json,
     run,
@@ -55,7 +54,7 @@ def source_key(args) -> dict:
     return {"type": "file", "path": str(path), "size": stat.st_size, "mtime": int(stat.st_mtime)}
 
 
-def download_youtube(url: str, sub_lang: str, dest: Path) -> tuple[Path, dict]:
+def download_youtube(url: str, sub_lang: str, dest: Path, cookies: str | None) -> tuple[Path, dict]:
     try:
         import yt_dlp
     except ImportError:
@@ -77,6 +76,10 @@ def download_youtube(url: str, sub_lang: str, dest: Path) -> tuple[Path, dict]:
         "quiet": False,
         "noprogress": True,
     }
+    if cookies:
+        # Netscape cookies.txt from a logged-in browser; YouTube often demands
+        # this ("confirm you're not a bot") for requests from cloud servers.
+        opts["cookiefile"] = cookies
     ffmpeg_dir = ffmpeg_dir_for_ytdlp()
     if ffmpeg_dir:
         opts["ffmpeg_location"] = ffmpeg_dir
@@ -107,16 +110,6 @@ def download_youtube(url: str, sub_lang: str, dest: Path) -> tuple[Path, dict]:
     return video_path, meta
 
 
-def measure_loudness(path: Path) -> dict:
-    """First loudnorm pass: measure integrated loudness, true peak and LRA."""
-    af = f"loudnorm=I={TARGET_LUFS}:TP={TARGET_TRUE_PEAK}:LRA={TARGET_LRA}:print_format=json"
-    proc = run(ffmpeg_cmd() + ["-hide_banner", "-nostats", "-i", str(path), "-vn", "-af", af, "-f", "null", "-"])
-    match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", proc.stderr, re.S)
-    if not match:
-        raise RuntimeError("Could not parse loudnorm measurement output")
-    return json.loads(match.group(0))
-
-
 def build_source(original: Path, out: Path) -> dict:
     """Create public/source.mp4: H.264 video (copied when possible) + loudness-normalized AAC."""
     info = probe(original)
@@ -136,11 +129,7 @@ def build_source(original: Path, out: Path) -> dict:
 
     log("Measuring loudness (pass 1/2)…")
     m = measure_loudness(original)
-    af = (
-        f"loudnorm=I={TARGET_LUFS}:TP={TARGET_TRUE_PEAK}:LRA={TARGET_LRA}"
-        f":measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
-        f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true"
-    )
+    af = loudnorm_filter(m)
 
     if can_copy:
         vargs = ["-c:v", "copy"]
@@ -195,6 +184,11 @@ def main() -> None:
     src.add_argument("--file", help="Local .mp4 / .mov / .mkv")
     p.add_argument("--sub-lang", default="en", help="Subtitle language to fetch from YouTube (default: en)")
     p.add_argument("--force", action="store_true", help="Replace an existing public/source.mp4 from a different source")
+    p.add_argument(
+        "--cookies",
+        default=os.environ.get("YTDLP_COOKIES"),
+        help="cookies.txt for YouTube (or $YTDLP_COOKIES), for videos that need a signed-in session",
+    )
     args = p.parse_args()
 
     if args.file:
@@ -236,7 +230,7 @@ def main() -> None:
     meta: dict = {"title": None, "subtitles": None}
     if args.url:
         log(f"Downloading {args.url}…")
-        original, meta = download_youtube(args.url, args.sub_lang, dl_dir)
+        original, meta = download_youtube(args.url, args.sub_lang, dl_dir, args.cookies)
     else:
         original = Path(args.file).resolve()
         meta["title"] = original.stem
