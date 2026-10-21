@@ -23,11 +23,11 @@ Requirements: Node 18+, Python 3.10+.
 ```bash
 npm install                      # Remotion + its bundled FFmpeg/FFprobe
 pip install -r requirements.txt  # yt-dlp, faster-whisper, anthropic, opencv, imageio-ffmpeg
-export ANTHROPIC_API_KEY=...     # or GEMINI_API_KEY with --provider gemini
+export ANTHROPIC_API_KEY=...     # or GEMINI_API_KEY with --provider gemini; not needed with --provider session
 export PEXELS_API_KEY=...        # optional: B-roll videos (and/or UNSPLASH_ACCESS_KEY for photos)
 ```
 
-**Running it from Claude Code on the web:** the repo ships a SessionStart hook (`.claude/hooks/session-start.sh`) that installs everything on session start. `CLAUDE.md` tells Claude how to run the pipeline when you paste a link or upload a video. The environment must allow `www.youtube.com`, `*.googlevideo.com`, `huggingface.co` and, for B-roll, `api.pexels.com`, `videos.pexels.com`, `api.unsplash.com` and `images.unsplash.com`. The API keys go in the environment's settings.
+**Running it from Claude Code on the web:** the repo ships a SessionStart hook (`.claude/hooks/session-start.sh`) that installs everything on session start. `CLAUDE.md` tells Claude how to run the pipeline when you paste a link or upload a video, do the scoring itself with `--provider session` (no API key), and send the finished clips back in the chat for download. The environment must allow `www.youtube.com`, `*.googlevideo.com`, `huggingface.co` and, for B-roll, `api.pexels.com`, `videos.pexels.com`, `api.unsplash.com` and `images.unsplash.com`. The API keys go in the environment's settings.
 
 You don't need a system FFmpeg. The Python scripts use Remotion's bundled binaries (`npx remotion ffmpeg`). Audio mixing needs filters that build leaves out, so it uses the full static FFmpeg from `imageio-ffmpeg` instead. `$FFMPEG`/`$FFPROBE` or whatever is on `PATH` also work.
 
@@ -68,6 +68,10 @@ The full transcript, with each word tagged by its absolute start time, goes to a
 - **Providers:**
   - `--provider anthropic` (default): `claude-sonnet-5-5`, with server-side refusal fallback enabled.
   - `--provider gemini`: `gemini-2.5-flash`, needs `pip install google-genai`.
+  - `--provider session`: the Claude running your Claude Code session does the scoring, with no API key.
+    - The script writes `output/scoring_request.md` (rubric, rules, word-timed transcript and JSON schema) and pauses with exit code 3.
+    - Claude writes `output/scoring_response.json`, echoing the request id, and re-runs the command.
+    - The answer then goes through the same validation, one stricter retry and snapping as an API response. B-roll picking works the same way (`broll_request.md`).
   - `--provider heuristic`: an offline keyword/pace scorer for dry runs, no key needed.
 
 ### 3–5. Render with Remotion

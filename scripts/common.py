@@ -211,6 +211,63 @@ def http_json(url: str, headers: dict | None = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+# --- Session provider -------------------------------------------------------
+# With --provider session, the Claude running the Claude Code session does the
+# LLM step itself instead of a script calling the API with a key: the script
+# writes output/<name>_request.md and exits with AWAITING_SESSION; Claude reads
+# it, writes output/<name>_response.json (echoing request_id), and re-runs the
+# same command, which then validates the answer like any other provider's.
+
+AWAITING_SESSION = 3
+
+
+def request_id(prompt: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+
+
+def session_paths(name: str) -> tuple[Path, Path]:
+    return OUTPUT_DIR / f"{name}_request.md", OUTPUT_DIR / f"{name}_response.json"
+
+
+def session_response(name: str, rid: str) -> dict | None:
+    """The session's answer to request `rid`, or None if it hasn't been written yet."""
+    _, resp = session_paths(name)
+    if not resp.exists():
+        return None
+    try:
+        data = read_json(resp)
+    except json.JSONDecodeError as e:
+        log(f"{rel(resp)} is not valid JSON ({e}); asking again.")
+        return None
+    return data if isinstance(data, dict) and data.get("request_id") == rid else None
+
+
+def await_session(name: str, prompt: str, schema: dict, note: str = "") -> None:
+    """Write the request for the Claude in this session and stop the pipeline until it answers."""
+    req, resp = session_paths(name)
+    rid = request_id(prompt)
+    req.parent.mkdir(parents=True, exist_ok=True)
+    req.write_text(
+        f"# {name} request {rid}\n\n"
+        "This step is done by Claude in the Claude Code session (--provider session).\n\n"
+        f"1. Read the task below and answer it yourself.\n"
+        f"2. Write the answer as JSON to `{rel(resp)}`. It must match the schema and include "
+        f'`"request_id": "{rid}"`.\n'
+        "3. Re-run the same command; it validates the answer and continues.\n"
+        + (f"\n{note}\n" if note else "")
+        + "\n## Response JSON schema\n\n```json\n"
+        + json.dumps({**schema, "properties": {"request_id": {"type": "string"}, **schema["properties"]}}, indent=2)
+        + "\n```\n\n## Task\n\n"
+        + prompt
+        + "\n",
+        encoding="utf-8",
+    )
+    log(f"Waiting for the Claude Code session: answer {rel(req)} in {rel(resp)}, then re-run.")
+    sys.exit(AWAITING_SESSION)
+
+
 def read_json(path: Path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)

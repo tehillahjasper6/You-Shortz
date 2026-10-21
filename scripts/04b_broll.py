@@ -9,6 +9,8 @@ the original audio and captions continue.
 Picking moments:
   anthropic / gemini  The LLM picks up to --per-clip moments per clip and
                       writes a stock-search query for each.
+  session             The Claude Code session picks them (output/broll_request.md
+                      -> output/broll_response.json), no API key.
   heuristic           Multi-word proper nouns and capitalised names (offline).
 
 Footage:
@@ -35,11 +37,14 @@ from common import (
     BROLL_JSON,
     HIGHLIGHTS_JSON,
     TRANSCRIPT_JSON,
+    await_session,
     download,
     http_json,
     log,
     read_json,
     rel,
+    request_id,
+    session_response,
     write_json,
 )
 
@@ -136,9 +141,44 @@ def space_out(picks: list[dict], n: int) -> list[dict]:
     return sorted(kept, key=lambda p: p["at"])
 
 
-def pick_llm(provider: str, model: str, words: list[dict], lo: float, hi: float, n: int) -> list[dict]:
+def pick_prompt(words: list[dict], lo: float, hi: float, n: int) -> str:
     transcript = " ".join(f"{w['word']}<{w['start']:.2f}>" for w in words)
-    prompt = PICK_PROMPT.format(n=n, lo=lo, hi=hi, gap=MIN_GAP_S, transcript=transcript)
+    return PICK_PROMPT.format(n=n, lo=lo, hi=hi, gap=MIN_GAP_S, transcript=transcript)
+
+
+def clean_picks(moments: list, words: list[dict], lo: float, hi: float, n: int) -> list[dict]:
+    """Keep in-window picks with a query, snapped onto the spoken word, spaced out."""
+    picks = []
+    for m in moments if isinstance(moments, list) else []:
+        at = m.get("at") if isinstance(m, dict) else None
+        if not isinstance(at, (int, float)) or not lo <= at <= hi or not str(m.get("query", "")).strip():
+            continue
+        # Snap to the nearest spoken word so the cutaway lands on the word itself.
+        nearest = min(words, key=lambda w: abs(w["start"] - at))
+        picks.append({"at": nearest["start"], "phrase": m.get("phrase", ""), "query": m["query"].strip()})
+    return space_out(picks, n)
+
+
+def session_picks(pending: list[tuple[int, list[dict], float, float]], n: int) -> dict[int, list]:
+    """One request covering every clip that needs B-roll, answered by the Claude Code session."""
+    sections = [f"## Clip #{rank}\n\n" + pick_prompt(words, lo, hi, n) for rank, words, lo, hi in pending]
+    prompt = (
+        "Pick B-roll moments for each clip below, independently. Answer with "
+        '{"clips": {"<rank>": {"moments": [...]}}}, one entry per clip.\n\n' + "\n\n".join(sections)
+    )
+    schema = {
+        "type": "object",
+        "properties": {"clips": {"type": "object", "additionalProperties": PICK_SCHEMA}},
+        "required": ["clips"],
+    }
+    answer = session_response("broll", request_id(prompt))
+    if answer is None:
+        await_session("broll", prompt, schema)
+    return {int(k): v.get("moments", []) for k, v in (answer or {}).get("clips", {}).items() if str(k).isdigit() and isinstance(v, dict)}
+
+
+def pick_llm(provider: str, model: str, words: list[dict], lo: float, hi: float, n: int) -> list[dict]:
+    prompt = pick_prompt(words, lo, hi, n)
     if provider == "anthropic":
         import anthropic
 
@@ -163,16 +203,7 @@ def pick_llm(provider: str, model: str, words: list[dict], lo: float, hi: float,
             config={"response_mime_type": "application/json", "response_json_schema": PICK_SCHEMA},
         )
         data = json.loads(response.text)
-
-    picks = []
-    for m in data.get("moments", []):
-        at = m.get("at")
-        if not isinstance(at, (int, float)) or not lo <= at <= hi or not str(m.get("query", "")).strip():
-            continue
-        # Snap to the nearest spoken word so the cutaway lands on the word itself.
-        nearest = min(words, key=lambda w: abs(w["start"] - at))
-        picks.append({"at": nearest["start"], "phrase": m.get("phrase", ""), "query": m["query"].strip()})
-    return space_out(picks, n)
+    return clean_picks(data.get("moments", []), words, lo, hi, n)
 
 
 # --------------------------------------------------------------------------- fetching
@@ -262,7 +293,7 @@ def fetch_media(query: str, exclude: set[str]) -> dict | None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--provider", choices=["anthropic", "gemini", "heuristic"], default="anthropic")
+    p.add_argument("--provider", choices=["anthropic", "gemini", "session", "heuristic"], default="anthropic")
     p.add_argument("--model", default=None)
     p.add_argument("--per-clip", type=int, default=2, help="Maximum cutaways per clip (default 2)")
     p.add_argument("--only", default=None, help="Comma-separated ranks (default: all)")
@@ -284,6 +315,7 @@ def main() -> None:
     model = args.model or DEFAULT_MODELS.get(args.provider, "heuristic")
     used: set[str] = {it["id"] for c in plan["clips"].values() for it in c.get("items", []) if it.get("id")}
 
+    pending = []
     for clip in highlights["clips"]:
         rank, start, end = clip["rank"], clip["start"], clip["end"]
         if only and rank not in only:
@@ -292,13 +324,24 @@ def main() -> None:
         if prev and not args.force and prev["start"] == start and prev["end"] == end:
             log(f"#{rank}: B-roll plan up to date ({len(prev['items'])} cutaway(s)).")
             continue
-
         words = clip_words(transcript, start, end)
         lo, hi = start + SKIP_START_S, end - SKIP_END_S - CUTAWAY_S
         if not words or hi <= lo:
             plan["clips"][str(rank)] = {"start": start, "end": end, "items": []}
             continue
-        if args.provider == "heuristic":
+        pending.append((clip, words, lo, hi))
+
+    session = (
+        session_picks([(c["rank"], w, lo, hi) for c, w, lo, hi in pending], args.per_clip)
+        if args.provider == "session" and pending
+        else {}
+    )
+
+    for clip, words, lo, hi in pending:
+        rank, start, end = clip["rank"], clip["start"], clip["end"]
+        if args.provider == "session":
+            picks = clean_picks(session.get(rank, []), words, lo, hi, args.per_clip)
+        elif args.provider == "heuristic":
             picks = pick_heuristic(words, lo, hi, args.per_clip)
         else:
             try:

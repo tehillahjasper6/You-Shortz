@@ -17,6 +17,8 @@ import { parseArgs } from "node:util";
 import { renderArgsSpec, renderOptionsFromArgs } from "./render-options.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Exit code a phase uses when it is waiting for the session to answer a request (common.py).
+const AWAITING_SESSION = 3;
 const PYTHON = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 const { values } = parseArgs({
@@ -63,7 +65,7 @@ Transcription
 
 Detection
   --clips N              Number of clips (default 3)
-  --provider NAME        anthropic (default) | gemini | heuristic (offline)
+  --provider NAME        anthropic (default) | gemini | session (Claude in this Claude Code session) | heuristic (offline)
   --model ID             Override the provider's model
   --redetect             Overwrite highlights.json (discards your edits)
 
@@ -90,6 +92,13 @@ Rendering
 const python = (script: string, args: string[]) => {
   const res = spawnSync(PYTHON, [path.join(ROOT, "scripts", script), ...args], { stdio: "inherit", cwd: ROOT });
   if (res.error) throw new Error(`Could not run ${PYTHON}: ${res.error.message} (set $PYTHON to your interpreter)`);
+  if (res.status === AWAITING_SESSION) {
+    console.log(
+      "[viral-clipper] Paused for the Claude Code session (--provider session): answer the request file named above, " +
+        "then re-run this same command to continue.",
+    );
+    process.exit(AWAITING_SESSION);
+  }
   if (res.status !== 0) process.exit(res.status ?? 1);
 };
 

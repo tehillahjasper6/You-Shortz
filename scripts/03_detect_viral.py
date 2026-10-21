@@ -16,6 +16,9 @@ Writes output/highlights.json — edit it freely, then re-render.
 Providers:
   anthropic  Claude (default model claude-sonnet-5-5; needs ANTHROPIC_API_KEY)
   gemini     Gemini (default model gemini-2.5-flash; needs GEMINI_API_KEY)
+  session    The Claude running this Claude Code session scores it: the
+             script writes output/scoring_request.md and exits with code 3;
+             Claude writes output/scoring_response.json and re-runs. No key.
   heuristic  Offline keyword/pace scorer — no API key, for dry runs
 """
 
@@ -34,10 +37,13 @@ from common import (
     INGEST_JSON,
     TRANSCRIPT_JSON,
     WORK_DIR,
+    await_session,
     ffmpeg_cmd,
     log,
     read_json,
     rel,
+    request_id,
+    session_response,
     run,
     write_json,
 )
@@ -54,7 +60,13 @@ MAX_YT_TITLE = 100
 FPS = 30
 SCORE_KEYS = ("hook_strength", "emotional_resonance", "shareability", "practical_value")
 
-DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "gemini": "gemini-2.5-flash", "heuristic": "heuristic-v1"}
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5-5",
+    "gemini": "gemini-2.5-flash",
+    "session": "claude-code-session",
+    "heuristic": "heuristic-v1",
+}
+RETRY_STATE = WORK_DIR / "scoring_retry.json"
 
 CLIP_SCHEMA = {
     "type": "object",
@@ -453,6 +465,46 @@ def main() -> None:
     model = args.model or DEFAULT_MODELS[args.provider]
     log(f"Scoring transcript with {args.provider} ({model}), asking for {ask} candidates…")
 
+    if args.provider == "session":
+        payload, errors = session_scoring(transcript, ask, duration, not args.no_word_times)
+    else:
+        payload, errors = api_scoring(args, model, transcript, ask, duration)
+
+    clips = [c for c in payload.get("clips", []) if clip_is_valid(c, duration)]
+    if errors:
+        log(f"Retry still had {len(errors)} violation(s); keeping the {len(clips)} clip(s) that pass on their own.")
+    if not clips:
+        sys.exit("No valid clips were returned. Try another --model, or --provider heuristic for an offline pass.")
+    finish(args, model, transcript, ingest, duration, want, clips)
+
+
+def session_scoring(transcript: dict, ask: int, duration: float, word_times: bool) -> tuple[dict, list[str]]:
+    """Score via the Claude Code session, with the same one stricter retry as the API path."""
+    prompt = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, None)
+    first = request_id(prompt)
+    answer = session_response("scoring", first)
+    if answer is not None:
+        errors = validate(answer, duration, ask)
+        if not errors:
+            return answer, []
+        write_json(RETRY_STATE, {"first": first, "errors": errors})
+        for e in errors:
+            log(f"  - {e}")
+        retry = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, errors)
+        await_session("scoring", retry, CLIP_SCHEMA, note="This is the one retry: the previous answer broke the contract (see the end of the task).")
+
+    state = read_json(RETRY_STATE) if RETRY_STATE.exists() else {}
+    if state.get("first") == first:
+        retry = SYSTEM_PROMPT + "\n\n" + build_user_prompt(transcript, ask, duration, word_times, state["errors"])
+        answer = session_response("scoring", request_id(retry))
+        if answer is not None:
+            return answer, validate(answer, duration, ask)
+        await_session("scoring", retry, CLIP_SCHEMA, note="This is the one retry: the previous answer broke the contract (see the end of the task).")
+    await_session("scoring", prompt, CLIP_SCHEMA)
+    raise AssertionError("unreachable")
+
+
+def api_scoring(args, model: str, transcript: dict, ask: int, duration: float) -> tuple[dict, list[str]]:
     def request(errors: list[str] | None) -> dict:
         if args.provider == "heuristic":
             return heuristic_candidates(transcript, ask, duration)
@@ -474,13 +526,10 @@ def main() -> None:
         for e in errors:
             log(f"  - {e}")
         payload, errors = attempt(errors)
+    return payload, errors
 
-    clips = [c for c in payload.get("clips", []) if clip_is_valid(c, duration)]
-    if errors:
-        log(f"Retry still had {len(errors)} violation(s); keeping the {len(clips)} clip(s) that pass on their own.")
-    if not clips:
-        sys.exit("No valid clips were returned. Try another --model, or --provider heuristic for an offline pass.")
 
+def finish(args, model: str, transcript: dict, ingest: dict, duration: float, want: int, clips: list[dict]) -> None:
     words = [w for s in transcript["segments"] for w in s["words"]]
     if not args.no_snap and words:
         silences = detect_silences(AUDIO_WAV) if AUDIO_WAV.exists() else []

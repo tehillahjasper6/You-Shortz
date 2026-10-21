@@ -26,6 +26,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Exit code the pipeline uses while waiting for the Claude Code session (--provider session).
+const AWAITING_SESSION = 3;
 const PYTHON = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 export type BatchVideo = { source: "url" | "file"; url?: string; path?: string; id: string; title?: string | null; error?: string };
@@ -170,7 +172,7 @@ const main = async () => {
   --url URL          Repeatable
   --limit N          Max videos per playlist/channel (default: all)
   --clips N          Clips per video (default 3)
-  --provider NAME    anthropic | gemini | heuristic (default anthropic)
+  --provider NAME    anthropic | gemini | session | heuristic (default anthropic)
   --workspaces DIR   Where per-video workspaces go (default ./workspaces)
   --cleanup          Delete each video's source/intermediate media after its clips render
   --force            Redo videos that already have clips`);
@@ -192,6 +194,7 @@ const main = async () => {
   console.log(`[viral-clipper] Batch: ${videos.length} video(s) → ${path.relative(ROOT, wsRoot) || wsRoot}/`);
 
   const results: BatchResult[] = [];
+  let paused = false;
   for (const [i, video] of videos.entries()) {
     const workspace = path.join(wsRoot, video.id);
     const label = `[${i + 1}/${videos.length}] ${video.title ?? video.url ?? video.path}`;
@@ -219,6 +222,13 @@ const main = async () => {
       ...passthrough,
     ];
     const res = spawnSync(process.execPath, args, { cwd: ROOT, stdio: "inherit", env: process.env });
+    if (res.status === AWAITING_SESSION) {
+      // --provider session: this video waits on the Claude Code session. Stop here; re-running the
+      // same batch skips finished videos and resumes this one once the request is answered.
+      console.log(`[viral-clipper] ${label}: paused for the Claude Code session; re-run the batch after answering.`);
+      paused = true;
+      break;
+    }
     const done = readClips(workspace);
     if (res.status === 0 && done?.clips.length) {
       results.push({ video, workspace, status: "done", ...done });
@@ -241,7 +251,8 @@ const main = async () => {
     `[viral-clipper] Batch finished: ${ok}/${results.length} video(s) OK, ${rows.filter((r) => r.clip_file).length} clip(s) ranked in ` +
       `${path.relative(ROOT, path.join(wsRoot, "batch_manifest.csv"))}`,
   );
-  if (ok < results.length) process.exitCode = 1;
+  if (paused) process.exitCode = AWAITING_SESSION;
+  else if (ok < results.length) process.exitCode = 1;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
