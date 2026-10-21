@@ -16,10 +16,8 @@ export type Highlight = {
   rank: number;
   start: number;
   end: number;
-  viral_score: number;
   hook_text: string;
   reasoning: string;
-  scores?: Record<string, number>;
   hook_variants?: { text: string; predicted_ctr: number }[];
   platform?: { tiktok_description?: string; instagram_caption?: string; youtube_title?: string };
 };

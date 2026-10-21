@@ -33,7 +33,7 @@ test("slugify makes filename-safe slugs cut on a word boundary", () => {
 });
 
 test("checkHighlight rejects broken edits and warns on soft limits", () => {
-  const base: Highlight = { rank: 1, start: 10, end: 40, viral_score: 80, hook_text: "Hook", reasoning: "" };
+  const base: Highlight = { rank: 1, start: 10, end: 40, hook_text: "Hook", reasoning: "" };
   assert.deepEqual(checkHighlight(base, 100), { errors: [], warnings: [] });
   assert.ok(checkHighlight({ ...base, end: 5 }, 100).errors.length);
   assert.ok(checkHighlight({ ...base, start: -1 }, 100).errors.length);

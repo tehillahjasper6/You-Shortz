@@ -1,6 +1,6 @@
 /**
  * Batch mode: run the whole pipeline over many videos (e.g. a creator's back
- * catalog), one after another, each in its own workspace, then rank every
+ * catalog), one after another, each in its own workspace, then list every
  * clip from every video in one CSV manifest.
  *
  *   npx tsx scripts/batch.ts --urls list.txt --clips 3
@@ -15,7 +15,7 @@
  * stopped (--force redoes them). --cleanup deletes each video's source and
  * intermediate media once its clips are rendered, to save disk.
  *
- * Writes workspaces/batch_manifest.csv (all clips, best first) and
+ * Writes workspaces/batch_manifest.csv (all clips, per video in pick order) and
  * workspaces/batch_manifest.json.
  */
 import { spawnSync } from "node:child_process";
@@ -38,7 +38,6 @@ type ClipMeta = {
   start: number;
   end: number;
   duration: number;
-  viral_score: number;
   hook_text: string;
   tiktok?: { description?: string };
   instagram_reels?: { caption?: string };
@@ -55,8 +54,6 @@ export type BatchResult = {
 };
 
 export const MANIFEST_COLUMNS = [
-  "overall_rank",
-  "viral_score",
   "video_title",
   "video_source",
   "clip_rank",
@@ -76,15 +73,12 @@ const csvCell = (v: unknown): string => {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-/** One row per clip across all videos, best viral_score first; failed videos are listed last. */
+/** One row per clip: videos in batch order, each video's clips most interesting first; failed videos last. */
 export const buildManifestRows = (results: BatchResult[], root: string): Record<(typeof MANIFEST_COLUMNS)[number], unknown>[] => {
   const clips = results.flatMap((r) =>
     r.clips.map((c) => ({ r, c })),
   );
-  clips.sort((a, b) => b.c.viral_score - a.c.viral_score);
-  const rows = clips.map(({ r, c }, i) => ({
-    overall_rank: i + 1,
-    viral_score: c.viral_score,
+  const rows = clips.map(({ r, c }) => ({
     video_title: r.title ?? r.video.title ?? "",
     video_source: r.video.url ?? r.video.path ?? "",
     clip_rank: c.rank,
@@ -100,8 +94,6 @@ export const buildManifestRows = (results: BatchResult[], root: string): Record<
   }));
   for (const r of results.filter((x) => x.status === "failed")) {
     rows.push({
-      overall_rank: "",
-      viral_score: "",
       video_title: r.title ?? r.video.title ?? "",
       video_source: r.video.url ?? r.video.path ?? "",
       clip_rank: "",
@@ -248,7 +240,7 @@ const main = async () => {
   );
   const ok = results.filter((r) => r.status !== "failed").length;
   console.log(
-    `[viral-clipper] Batch finished: ${ok}/${results.length} video(s) OK, ${rows.filter((r) => r.clip_file).length} clip(s) ranked in ` +
+    `[viral-clipper] Batch finished: ${ok}/${results.length} video(s) OK, ${rows.filter((r) => r.clip_file).length} clip(s) listed in ` +
       `${path.relative(ROOT, path.join(wsRoot, "batch_manifest.csv"))}`,
   );
   if (paused) process.exitCode = AWAITING_SESSION;

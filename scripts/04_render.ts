@@ -177,8 +177,6 @@ export async function renderClips(opts: RenderOptions = {}): Promise<string[]> {
       start: clip.start,
       end: clip.end,
       duration: +(clip.end - clip.start).toFixed(3),
-      viral_score: clip.viral_score,
-      scores: clip.scores,
       hook_text: clip.hook_text,
       reasoning: clip.reasoning,
       tiktok: { description: clip.platform?.tiktok_description ?? "" },
