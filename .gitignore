@@ -6,5 +6,5 @@ __pycache__/
 # Pipeline artifacts — large media and per-video output stay local.
 public/source.mp4
 public/*.partial.mp4
-output/
+output/*
 !output/.gitkeep
