@@ -8,3 +8,7 @@ public/source.mp4
 public/*.partial.mp4
 output/*
 !output/.gitkeep
+
+# Downloaded at runtime
+models/
+public/broll/
