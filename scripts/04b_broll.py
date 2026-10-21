@@ -34,12 +34,12 @@ from common import (
     BROLL_DIR,
     BROLL_JSON,
     HIGHLIGHTS_JSON,
-    ROOT,
     TRANSCRIPT_JSON,
     download,
     http_json,
     log,
     read_json,
+    rel,
     write_json,
 )
 
@@ -320,7 +320,7 @@ def main() -> None:
         write_json(BROLL_JSON, plan)
 
     write_json(BROLL_JSON, plan)
-    log(f"Wrote {BROLL_JSON.relative_to(ROOT)}.")
+    log(f"Wrote {rel(BROLL_JSON)}.")
 
 
 if __name__ == "__main__":

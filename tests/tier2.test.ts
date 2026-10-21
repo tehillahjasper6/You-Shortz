@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cameraX, cropLeft } from "../remotion/camera.ts";
-import { chooseReframe, clipBroll, type FaceTrack } from "../scripts/04_render.ts";
+import { chooseReframe, clipBroll, type FaceTrack } from "../remotion/clip-props.ts";
 
 const path = [
   { t: 0, cx: 0.3 },

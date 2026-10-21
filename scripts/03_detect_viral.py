@@ -32,12 +32,12 @@ from common import (
     AUDIO_WAV,
     HIGHLIGHTS_JSON,
     INGEST_JSON,
-    ROOT,
     TRANSCRIPT_JSON,
     WORK_DIR,
     ffmpeg_cmd,
     log,
     read_json,
+    rel,
     run,
     write_json,
 )
@@ -534,7 +534,7 @@ def main() -> None:
             "clips": out_clips,
         },
     )
-    log(f"Wrote {HIGHLIGHTS_JSON.relative_to(ROOT)}:")
+    log(f"Wrote {rel(HIGHLIGHTS_JSON)}:")
     for c in out_clips:
         log(f"  #{c['rank']} [{c['start']:.2f} → {c['end']:.2f}] score {c['viral_score']} — {c['hook_text']}")
 

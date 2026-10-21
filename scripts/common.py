@@ -16,8 +16,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PUBLIC_DIR = ROOT / "public"
-OUTPUT_DIR = ROOT / "output"
+# One video's working set (public/ + output/). The repo root by default; batch
+# mode gives every video its own directory via $VIRAL_CLIPPER_WORKSPACE.
+WORKSPACE = Path(os.environ.get("VIRAL_CLIPPER_WORKSPACE") or ROOT).resolve()
+PUBLIC_DIR = WORKSPACE / "public"
+OUTPUT_DIR = WORKSPACE / "output"
 WORK_DIR = OUTPUT_DIR / "work"
 CLIPS_DIR = OUTPUT_DIR / "clips"
 
@@ -34,6 +37,14 @@ MODELS_DIR = ROOT / "models"
 TARGET_LUFS = -14.0
 TARGET_TRUE_PEAK = -1.5
 TARGET_LRA = 11.0
+
+
+def rel(path: Path) -> str:
+    """Path for log messages: relative to the repo when inside it."""
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def log(msg: str) -> None:

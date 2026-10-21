@@ -31,6 +31,7 @@ from common import (
     TARGET_LUFS,
     TRANSCRIPT_JSON,
     WORK_DIR,
+    WORKSPACE,
     ffmpeg_cmd,
     ffmpeg_dir_for_ytdlp,
     log,
@@ -38,6 +39,7 @@ from common import (
     measure_loudness,
     probe,
     read_json,
+    rel,
     run,
     write_json,
 )
@@ -204,7 +206,7 @@ def main() -> None:
         if previous.get("source") == key:
             if not AUDIO_WAV.exists():
                 extract_speech_audio(SOURCE_VIDEO, AUDIO_WAV)
-            log(f"Already ingested ({SOURCE_VIDEO.relative_to(SOURCE_VIDEO.parent.parent)}); skipping download.")
+            log(f"Already ingested ({rel(SOURCE_VIDEO)}); skipping download.")
             return
         if not args.force:
             sys.exit(
@@ -244,7 +246,7 @@ def main() -> None:
     if subtitles:
         kept = WORK_DIR / f"subtitles.{subtitles['lang']}.json3"
         shutil.copyfile(subtitles["path"], kept)
-        subtitles = {**subtitles, "path": str(kept.relative_to(WORK_DIR.parent.parent))}
+        subtitles = {**subtitles, "path": str(kept.relative_to(WORKSPACE))}
 
     record = {
         "source": key,

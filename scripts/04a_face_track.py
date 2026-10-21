@@ -31,11 +31,11 @@ from common import (
     FACE_TRACKS_JSON,
     HIGHLIGHTS_JSON,
     MODELS_DIR,
-    ROOT,
     SOURCE_VIDEO,
     download,
     log,
     read_json,
+    rel,
     write_json,
 )
 
@@ -289,7 +289,7 @@ def main() -> None:
         write_json(FACE_TRACKS_JSON, cache)
 
     write_json(FACE_TRACKS_JSON, cache)
-    log(f"Wrote {FACE_TRACKS_JSON.relative_to(ROOT)}.")
+    log(f"Wrote {rel(FACE_TRACKS_JSON)}.")
 
 
 if __name__ == "__main__":
